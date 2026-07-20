@@ -85,7 +85,7 @@ public final class SentinelPlugin extends JavaPlugin implements Listener {
         var cfg = getConfig();
 
         speedEnabled = cfg.getBoolean("checks.speed.enabled", true);
-        speedMaxBps = cfg.getDouble("checks.speed.max-blocks-per-second", 8.5);
+        speedMaxBps = cfg.getDouble("checks.speed.max-blocks-per-second", 13);
         speedThreshold = cfg.getInt("checks.speed.violations-before-alert", 3);
 
         flyEnabled = cfg.getBoolean("checks.fly.enabled", true);
@@ -97,7 +97,7 @@ public final class SentinelPlugin extends JavaPlugin implements Listener {
         reachThreshold = cfg.getInt("checks.reach.violations-before-alert", 2);
 
         clickEnabled = cfg.getBoolean("checks.autoclicker.enabled", true);
-        clickMaxCps = cfg.getInt("checks.autoclicker.max-clicks-per-second", 18);
+        clickMaxCps = cfg.getInt("checks.autoclicker.max-clicks-per-second", 20);
         clickThreshold = cfg.getInt("checks.autoclicker.violations-before-alert", 3);
 
         decaySeconds = cfg.getLong("violation-decay-seconds", 60);
