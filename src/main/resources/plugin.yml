@@ -10,6 +10,10 @@ commands:
     description: Sentinel anticheat admin command.
     usage: "/sentinel reload | /sentinel toggle"
     permission: sentinel.admin
+  sus:
+    description: View and spectate suspicious (flagged) players.
+    usage: "/sus | /sus back"
+    permission: sentinel.sus
 
 permissions:
   sentinel.admin:
@@ -21,3 +25,6 @@ permissions:
   sentinel.bypass:
     description: Exempt a player from all Sentinel checks.
     default: false
+  sentinel.sus:
+    description: Allows using /sus to view and spectate flagged players.
+    default: op
