@@ -1,26 +1,38 @@
 package com.example.sentinel;
 
+import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.GameMode;
 import org.bukkit.Location;
+import org.bukkit.Material;
+import org.bukkit.World;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
+import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.event.inventory.InventoryCloseEvent;
 import org.bukkit.event.player.PlayerAnimationEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.inventory.Inventory;
+import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.inventory.meta.SkullMeta;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.potion.PotionEffect;
 import org.bukkit.potion.PotionEffectType;
 import org.bukkit.scheduler.BukkitRunnable;
+import org.bukkit.util.Vector;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -31,14 +43,20 @@ public final class SentinelPlugin extends JavaPlugin implements Listener {
     private boolean speedEnabled;
     private double speedMaxBps;
     private int speedThreshold;
+    private boolean speedBlock;
+    private int speedBlockViolations;
 
     private boolean flyEnabled;
     private int flyMaxAirborneTicks;
     private int flyThreshold;
+    private boolean flyBlock;
+    private int flyBlockViolations;
 
     private boolean reachEnabled;
     private double reachMaxDistance;
     private int reachThreshold;
+    private boolean reachBlock;
+    private int reachBlockViolations;
 
     private boolean clickEnabled;
     private int clickMaxCps;
@@ -46,13 +64,21 @@ public final class SentinelPlugin extends JavaPlugin implements Listener {
 
     private long decaySeconds;
 
+    private static final String SUS_MENU_TITLE = ChatColor.DARK_RED + "Sentinel - Suspicious Players";
+    private static final String[] FILTERS = {"ALL", "NORMAL", "NETHER", "THE_END"};
+
+    private final Map<UUID, Map<Integer, UUID>> susMenuSlots = new HashMap<>();
+    private final Map<UUID, Location> spectatorReturnLocation = new HashMap<>();
+    private final Map<UUID, GameMode> spectatorReturnGameMode = new HashMap<>();
+
     @Override
     public void onEnable() {
         saveDefaultConfig();
         loadConfigValues();
 
         getServer().getPluginManager().registerEvents(this, this);
-        getCommand("sentinel").setExecutor(this::onCommand);
+        getCommand("sentinel").setExecutor(this::onSentinelCommand);
+        getCommand("sus").setExecutor(this::onSusCommand);
 
         new BukkitRunnable() {
             @Override
@@ -68,7 +94,7 @@ public final class SentinelPlugin extends JavaPlugin implements Listener {
                     PlayerData pd = data.get(p.getUniqueId());
                     if (pd == null) continue;
                     if (!p.isOnGround() && !p.isGliding() && !p.isSwimming()
-                            && !p.isFlying() && p.getAllowFlight() == false) {
+                            && !p.isFlying() && !p.getAllowFlight()) {
                         pd.airborneTicks++;
                     } else {
                         pd.airborneTicks = 0;
@@ -87,14 +113,20 @@ public final class SentinelPlugin extends JavaPlugin implements Listener {
         speedEnabled = cfg.getBoolean("checks.speed.enabled", true);
         speedMaxBps = cfg.getDouble("checks.speed.max-blocks-per-second", 8.5);
         speedThreshold = cfg.getInt("checks.speed.violations-before-alert", 3);
+        speedBlock = cfg.getBoolean("checks.speed.block", true);
+        speedBlockViolations = cfg.getInt("checks.speed.block-violations", 6);
 
         flyEnabled = cfg.getBoolean("checks.fly.enabled", true);
         flyMaxAirborneTicks = cfg.getInt("checks.fly.max-airborne-ticks", 40);
         flyThreshold = cfg.getInt("checks.fly.violations-before-alert", 3);
+        flyBlock = cfg.getBoolean("checks.fly.block", true);
+        flyBlockViolations = cfg.getInt("checks.fly.block-violations", 6);
 
         reachEnabled = cfg.getBoolean("checks.reach.enabled", true);
         reachMaxDistance = cfg.getDouble("checks.reach.max-distance", 4.0);
         reachThreshold = cfg.getInt("checks.reach.violations-before-alert", 2);
+        reachBlock = cfg.getBoolean("checks.reach.block", true);
+        reachBlockViolations = cfg.getInt("checks.reach.block-violations", 3);
 
         clickEnabled = cfg.getBoolean("checks.autoclicker.enabled", true);
         clickMaxCps = cfg.getInt("checks.autoclicker.max-clicks-per-second", 18);
@@ -103,7 +135,7 @@ public final class SentinelPlugin extends JavaPlugin implements Listener {
         decaySeconds = cfg.getLong("violation-decay-seconds", 60);
     }
 
-    public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+    private boolean onSentinelCommand(CommandSender sender, Command command, String label, String[] args) {
         if (args.length == 1 && args[0].equalsIgnoreCase("reload")) {
             if (!sender.hasPermission("sentinel.admin")) {
                 sender.sendMessage(ChatColor.RED + "You don't have permission to do that.");
@@ -127,6 +159,160 @@ public final class SentinelPlugin extends JavaPlugin implements Listener {
 
         sender.sendMessage(ChatColor.RED + "Usage: /sentinel reload | /sentinel toggle");
         return true;
+    }
+
+    private boolean onSusCommand(CommandSender sender, Command command, String label, String[] args) {
+        if (!(sender instanceof Player viewer)) {
+            sender.sendMessage(ChatColor.RED + "Only players can use this command.");
+            return true;
+        }
+        if (!viewer.hasPermission("sentinel.sus")) {
+            viewer.sendMessage(ChatColor.RED + "You don't have permission to do that.");
+            return true;
+        }
+
+        if (args.length == 1 && args[0].equalsIgnoreCase("back")) {
+            restoreFromSpectate(viewer);
+            return true;
+        }
+
+        openSusMenu(viewer, "ALL");
+        return true;
+    }
+
+    private void openSusMenu(Player viewer, String filter) {
+        List<Map.Entry<UUID, PlayerData>> flagged = new ArrayList<>();
+        for (Map.Entry<UUID, PlayerData> entry : data.entrySet()) {
+            PlayerData pd = entry.getValue();
+            int total = pd.speedViolations + pd.flyViolations + pd.reachViolations + pd.clickViolations;
+            if (total <= 0) continue;
+
+            Player target = Bukkit.getPlayer(entry.getKey());
+            if (target == null || !target.isOnline()) continue;
+
+            if (!filter.equals("ALL") && !target.getWorld().getEnvironment().name().equals(filter)) continue;
+
+            flagged.add(entry);
+        }
+
+        flagged.sort((a, b) -> {
+            int totalA = a.getValue().speedViolations + a.getValue().flyViolations + a.getValue().reachViolations + a.getValue().clickViolations;
+            int totalB = b.getValue().speedViolations + b.getValue().flyViolations + b.getValue().reachViolations + b.getValue().clickViolations;
+            return Integer.compare(totalB, totalA);
+        });
+
+        int rows = Math.min(6, 2 + (flagged.size() / 9) + 1);
+        Inventory inv = Bukkit.createInventory(null, rows * 9, SUS_MENU_TITLE);
+
+        inv.setItem(0, filterItem(Material.NAME_TAG, "All Dimensions", "ALL", filter));
+        inv.setItem(1, filterItem(Material.GRASS_BLOCK, "Overworld", "NORMAL", filter));
+        inv.setItem(2, filterItem(Material.NETHERRACK, "Nether", "NETHER", filter));
+        inv.setItem(3, filterItem(Material.END_STONE, "The End", "THE_END", filter));
+
+        Map<Integer, UUID> slotMap = new HashMap<>();
+        int slot = 9;
+        for (Map.Entry<UUID, PlayerData> entry : flagged) {
+            if (slot >= rows * 9) break;
+            Player target = Bukkit.getPlayer(entry.getKey());
+            if (target == null) continue;
+            PlayerData pd = entry.getValue();
+
+            ItemStack head = new ItemStack(Material.PLAYER_HEAD);
+            SkullMeta meta = (SkullMeta) head.getItemMeta();
+            meta.setOwningPlayer(target);
+            meta.setDisplayName(ChatColor.YELLOW + target.getName());
+
+            List<String> lore = new ArrayList<>();
+            lore.add(ChatColor.GRAY + "Dimension: " + ChatColor.WHITE + dimensionName(target.getWorld()));
+            if (pd.speedViolations > 0) lore.add(ChatColor.RED + "Speed: " + pd.speedViolations);
+            if (pd.flyViolations > 0) lore.add(ChatColor.RED + "Fly: " + pd.flyViolations);
+            if (pd.reachViolations > 0) lore.add(ChatColor.RED + "Reach: " + pd.reachViolations);
+            if (pd.clickViolations > 0) lore.add(ChatColor.RED + "Autoclicker: " + pd.clickViolations);
+            lore.add("");
+            lore.add(ChatColor.GREEN + "Click to spectate");
+            meta.setLore(lore);
+
+            head.setItemMeta(meta);
+            inv.setItem(slot, head);
+            slotMap.put(slot, target.getUniqueId());
+            slot++;
+        }
+
+        susMenuSlots.put(viewer.getUniqueId(), slotMap);
+        viewer.openInventory(inv);
+    }
+
+    private ItemStack filterItem(Material mat, String name, String filterValue, String currentFilter) {
+        ItemStack item = new ItemStack(mat);
+        ItemMeta meta = item.getItemMeta();
+        boolean selected = filterValue.equals(currentFilter);
+        meta.setDisplayName((selected ? ChatColor.GREEN + "" + ChatColor.BOLD : ChatColor.GRAY.toString()) + name + (selected ? " (selected)" : ""));
+        item.setItemMeta(meta);
+        return item;
+    }
+
+    private String dimensionName(World world) {
+        return switch (world.getEnvironment()) {
+            case NETHER -> "Nether";
+            case THE_END -> "The End";
+            default -> "Overworld";
+        };
+    }
+
+    @EventHandler
+    public void onInventoryClick(InventoryClickEvent event) {
+        if (!event.getView().getTitle().equals(SUS_MENU_TITLE)) return;
+        event.setCancelled(true);
+
+        if (!(event.getWhoClicked() instanceof Player viewer)) return;
+        int slot = event.getRawSlot();
+        if (slot < 0 || slot >= event.getInventory().getSize()) return;
+
+        if (slot >= 0 && slot <= 3) {
+            String filter = FILTERS[slot];
+            openSusMenu(viewer, filter);
+            return;
+        }
+
+        Map<Integer, UUID> slotMap = susMenuSlots.get(viewer.getUniqueId());
+        if (slotMap == null) return;
+        UUID targetId = slotMap.get(slot);
+        if (targetId == null) return;
+
+        Player target = Bukkit.getPlayer(targetId);
+        if (target == null || !target.isOnline()) {
+            viewer.sendMessage(ChatColor.RED + "That player is no longer online.");
+            return;
+        }
+
+        spectatorReturnLocation.put(viewer.getUniqueId(), viewer.getLocation());
+        spectatorReturnGameMode.put(viewer.getUniqueId(), viewer.getGameMode());
+
+        viewer.closeInventory();
+        viewer.setGameMode(GameMode.SPECTATOR);
+        viewer.teleport(target.getLocation());
+        viewer.sendMessage(ChatColor.GREEN + "Now spectating " + target.getName() + ". Use " + ChatColor.WHITE + "/sus back" + ChatColor.GREEN + " to return.");
+    }
+
+    @EventHandler
+    public void onInventoryClose(InventoryCloseEvent event) {
+        if (event.getView().getTitle().equals(SUS_MENU_TITLE)) {
+            susMenuSlots.remove(event.getPlayer().getUniqueId());
+        }
+    }
+
+    private void restoreFromSpectate(Player viewer) {
+        Location loc = spectatorReturnLocation.remove(viewer.getUniqueId());
+        GameMode mode = spectatorReturnGameMode.remove(viewer.getUniqueId());
+
+        if (loc == null || mode == null) {
+            viewer.sendMessage(ChatColor.RED + "Nothing to return from.");
+            return;
+        }
+
+        viewer.setGameMode(mode);
+        viewer.teleport(loc);
+        viewer.sendMessage(ChatColor.GREEN + "Returned.");
     }
 
     @EventHandler
@@ -168,6 +354,11 @@ public final class SentinelPlugin extends JavaPlugin implements Listener {
                         alert(player, "Speed", pd.speedViolations,
                                 String.format("%.2f blocks/s (max %.2f)", bps, allowedMax));
                     }
+                    if (speedBlock && pd.speedViolations >= speedBlockViolations) {
+                        event.setTo(from);
+                        pd.lastMoveTime = now;
+                        return;
+                    }
                 }
             }
         }
@@ -182,6 +373,10 @@ public final class SentinelPlugin extends JavaPlugin implements Listener {
             pd.airborneTicks = 0;
             if (pd.flyViolations >= flyThreshold) {
                 alert(player, "Fly", pd.flyViolations, "airborne without valid cause");
+            }
+            if (flyBlock && pd.flyViolations >= flyBlockViolations) {
+                Vector velocity = player.getVelocity();
+                player.setVelocity(new Vector(velocity.getX(), -0.6, velocity.getZ()));
             }
         }
     }
@@ -200,6 +395,9 @@ public final class SentinelPlugin extends JavaPlugin implements Listener {
             if (pd.reachViolations >= reachThreshold) {
                 alert(attacker, "Reach", pd.reachViolations,
                         String.format("%.2f blocks (max %.2f)", distance, reachMaxDistance));
+            }
+            if (reachBlock && pd.reachViolations >= reachBlockViolations) {
+                event.setCancelled(true);
             }
         }
     }
