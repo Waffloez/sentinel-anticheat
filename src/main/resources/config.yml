@@ -48,7 +48,6 @@ autoban:
   enabled: true
   # Combined violation count across ALL checks before a ban fires.
   total-violations: 15
-  # LiteBans duration format (e.g. 7d, 30d), or "permanent".
-  # If LiteBans isn't installed, this is ignored and it's always permanent.
-  duration: "permanent"
-  reason: "Automatically banned by Sentinel for repeated cheat detections"
+  # The reason key from your Offend plugin's config.yml to use
+  # (e.g. "cheats", "esp", "macros" - see plugins/Offend/config.yml).
+  offend-reason: "cheats"
