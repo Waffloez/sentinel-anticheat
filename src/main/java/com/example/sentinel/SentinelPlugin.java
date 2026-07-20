@@ -199,3 +199,329 @@ public final class SentinelPlugin extends JavaPlugin implements Listener {
 
             Player target = Bukkit.getPlayer(entry.getKey());
             if (target == null || !target.isOnline()) continue;
+
+            if (!filter.equals("ALL") && !target.getWorld().getEnvironment().name().equals(filter)) continue;
+
+            flagged.add(entry);
+        }
+
+        flagged.sort((a, b) -> {
+            int totalA = a.getValue().speedViolations + a.getValue().flyViolations + a.getValue().reachViolations + a.getValue().clickViolations;
+            int totalB = b.getValue().speedViolations + b.getValue().flyViolations + b.getValue().reachViolations + b.getValue().clickViolations;
+            return Integer.compare(totalB, totalA);
+        });
+
+        int rows = Math.min(6, 2 + (flagged.size() / 9) + 1);
+        Inventory inv = Bukkit.createInventory(null, rows * 9, SUS_MENU_TITLE);
+
+        inv.setItem(0, filterItem(Material.NAME_TAG, "All Dimensions", "ALL", filter));
+        inv.setItem(1, filterItem(Material.GRASS_BLOCK, "Overworld", "NORMAL", filter));
+        inv.setItem(2, filterItem(Material.NETHERRACK, "Nether", "NETHER", filter));
+        inv.setItem(3, filterItem(Material.END_STONE, "The End", "THE_END", filter));
+
+        Map<Integer, UUID> slotMap = new HashMap<>();
+        int slot = 9;
+        for (Map.Entry<UUID, PlayerData> entry : flagged) {
+            if (slot >= rows * 9) break;
+            Player target = Bukkit.getPlayer(entry.getKey());
+            if (target == null) continue;
+            PlayerData pd = entry.getValue();
+
+            ItemStack head = new ItemStack(Material.PLAYER_HEAD);
+            SkullMeta meta = (SkullMeta) head.getItemMeta();
+            meta.setOwningPlayer(target);
+            meta.setDisplayName(ChatColor.YELLOW + target.getName());
+
+            List<String> lore = new ArrayList<>();
+            lore.add(ChatColor.GRAY + "Dimension: " + ChatColor.WHITE + dimensionName(target.getWorld()));
+            if (pd.speedViolations > 0) lore.add(ChatColor.RED + "Speed: " + pd.speedViolations);
+            if (pd.flyViolations > 0) lore.add(ChatColor.RED + "Fly: " + pd.flyViolations);
+            if (pd.reachViolations > 0) lore.add(ChatColor.RED + "Reach: " + pd.reachViolations);
+            if (pd.clickViolations > 0) lore.add(ChatColor.RED + "Autoclicker: " + pd.clickViolations);
+            lore.add("");
+            lore.add(ChatColor.GREEN + "Click to spectate");
+            meta.setLore(lore);
+
+            head.setItemMeta(meta);
+            inv.setItem(slot, head);
+            slotMap.put(slot, target.getUniqueId());
+            slot++;
+        }
+
+        susMenuSlots.put(viewer.getUniqueId(), slotMap);
+        viewer.openInventory(inv);
+    }
+
+    private ItemStack filterItem(Material mat, String name, String filterValue, String currentFilter) {
+        ItemStack item = new ItemStack(mat);
+        ItemMeta meta = item.getItemMeta();
+        boolean selected = filterValue.equals(currentFilter);
+        meta.setDisplayName((selected ? ChatColor.GREEN + "" + ChatColor.BOLD : ChatColor.GRAY.toString()) + name + (selected ? " (selected)" : ""));
+        item.setItemMeta(meta);
+        return item;
+    }
+
+    private String dimensionName(World world) {
+        return switch (world.getEnvironment()) {
+            case NETHER -> "Nether";
+            case THE_END -> "The End";
+            default -> "Overworld";
+        };
+    }
+
+    @EventHandler
+    public void onInventoryClick(InventoryClickEvent event) {
+        if (!event.getView().getTitle().equals(SUS_MENU_TITLE)) return;
+        event.setCancelled(true);
+
+        if (!(event.getWhoClicked() instanceof Player viewer)) return;
+        int slot = event.getRawSlot();
+        if (slot < 0 || slot >= event.getInventory().getSize()) return;
+
+        if (slot >= 0 && slot <= 3) {
+            String filter = FILTERS[slot];
+            openSusMenu(viewer, filter);
+            return;
+        }
+
+        Map<Integer, UUID> slotMap = susMenuSlots.get(viewer.getUniqueId());
+        if (slotMap == null) return;
+        UUID targetId = slotMap.get(slot);
+        if (targetId == null) return;
+
+        Player target = Bukkit.getPlayer(targetId);
+        if (target == null || !target.isOnline()) {
+            viewer.sendMessage(ChatColor.RED + "That player is no longer online.");
+            return;
+        }
+
+        spectatorReturnLocation.put(viewer.getUniqueId(), viewer.getLocation());
+        spectatorReturnGameMode.put(viewer.getUniqueId(), viewer.getGameMode());
+
+        viewer.closeInventory();
+        viewer.setGameMode(GameMode.SPECTATOR);
+        viewer.teleport(target.getLocation());
+        viewer.sendMessage(ChatColor.GREEN + "Now spectating " + target.getName() + ". Use " + ChatColor.WHITE + "/sus back" + ChatColor.GREEN + " to return.");
+    }
+
+    @EventHandler
+    public void onInventoryClose(InventoryCloseEvent event) {
+        if (event.getView().getTitle().equals(SUS_MENU_TITLE)) {
+            susMenuSlots.remove(event.getPlayer().getUniqueId());
+        }
+    }
+
+    private void restoreFromSpectate(Player viewer) {
+        Location loc = spectatorReturnLocation.remove(viewer.getUniqueId());
+        GameMode mode = spectatorReturnGameMode.remove(viewer.getUniqueId());
+
+        if (loc == null || mode == null) {
+            viewer.sendMessage(ChatColor.RED + "Nothing to return from.");
+            return;
+        }
+
+        viewer.setGameMode(mode);
+        viewer.teleport(loc);
+        viewer.sendMessage(ChatColor.GREEN + "Returned.");
+    }
+
+    @EventHandler
+    public void onJoin(PlayerJoinEvent event) {
+        data.put(event.getPlayer().getUniqueId(), new PlayerData());
+    }
+
+    @EventHandler
+    public void onQuit(PlayerQuitEvent event) {
+        data.remove(event.getPlayer().getUniqueId());
+    }
+
+    @EventHandler
+    public void onMove(PlayerMoveEvent event) {
+        Player player = event.getPlayer();
+        if (player.hasPermission("sentinel.bypass")) return;
+        if (player.getGameMode() == GameMode.CREATIVE || player.getGameMode() == GameMode.SPECTATOR) return;
+
+        PlayerData pd = data.computeIfAbsent(player.getUniqueId(), k -> new PlayerData());
+        if (pd.banned) return;
+
+        Location from = event.getFrom();
+        Location to = event.getTo();
+        if (to == null) return;
+
+        long now = System.currentTimeMillis();
+
+        if (speedEnabled && pd.lastMoveTime > 0) {
+            double dx = to.getX() - from.getX();
+            double dz = to.getZ() - from.getZ();
+            double horizontalDistance = Math.sqrt(dx * dx + dz * dz);
+            double elapsedSeconds = (now - pd.lastMoveTime) / 1000.0;
+
+            if (elapsedSeconds > 0.01) {
+                double bps = horizontalDistance / elapsedSeconds;
+                double allowedMax = speedMaxBps * speedMultiplier(player);
+
+                if (bps > allowedMax) {
+                    pd.speedViolations++;
+                    if (pd.speedViolations >= speedThreshold) {
+                        alert(player, "Speed", pd.speedViolations,
+                                String.format("%.2f blocks/s (max %.2f)", bps, allowedMax));
+                    }
+                    if (speedBlock && pd.speedViolations >= speedBlockViolations) {
+                        event.setTo(from);
+                        pd.lastMoveTime = now;
+                        checkAutoban(player, pd);
+                        return;
+                    }
+                    checkAutoban(player, pd);
+                    if (pd.banned) return;
+                }
+            }
+        }
+        pd.lastMoveTime = now;
+
+        if (flyEnabled && !player.isOnGround() && pd.airborneTicks > flyMaxAirborneTicks
+                && !player.isGliding() && !player.isSwimming()
+                && player.getVehicle() == null
+                && !player.hasPotionEffect(PotionEffectType.LEVITATION)
+                && !isNearClimbable(player)) {
+            pd.flyViolations++;
+            pd.airborneTicks = 0;
+            if (pd.flyViolations >= flyThreshold) {
+                alert(player, "Fly", pd.flyViolations, "airborne without valid cause");
+            }
+            if (flyBlock && pd.flyViolations >= flyBlockViolations) {
+                Vector velocity = player.getVelocity();
+                player.setVelocity(new Vector(velocity.getX(), -0.6, velocity.getZ()));
+            }
+            checkAutoban(player, pd);
+        }
+    }
+
+    @EventHandler
+    public void onDamage(EntityDamageByEntityEvent event) {
+        if (!reachEnabled) return;
+        if (!(event.getDamager() instanceof Player attacker)) return;
+        if (attacker.hasPermission("sentinel.bypass")) return;
+        if (attacker.getGameMode() == GameMode.CREATIVE || attacker.getGameMode() == GameMode.SPECTATOR) return;
+
+        PlayerData pd = data.computeIfAbsent(attacker.getUniqueId(), k -> new PlayerData());
+        if (pd.banned) return;
+
+        double distance = attacker.getEyeLocation().distance(event.getEntity().getLocation());
+        if (distance > reachMaxDistance) {
+            pd.reachViolations++;
+            if (pd.reachViolations >= reachThreshold) {
+                alert(attacker, "Reach", pd.reachViolations,
+                        String.format("%.2f blocks (max %.2f)", distance, reachMaxDistance));
+            }
+            if (reachBlock && pd.reachViolations >= reachBlockViolations) {
+                event.setCancelled(true);
+            }
+            checkAutoban(attacker, pd);
+        }
+    }
+
+    @EventHandler
+    public void onSwing(PlayerAnimationEvent event) {
+        if (!clickEnabled) return;
+        Player player = event.getPlayer();
+        if (player.hasPermission("sentinel.bypass")) return;
+
+        PlayerData pd = data.computeIfAbsent(player.getUniqueId(), k -> new PlayerData());
+        if (pd.banned) return;
+
+        long now = System.currentTimeMillis();
+        pd.clickTimestamps.addLast(now);
+
+        while (!pd.clickTimestamps.isEmpty() && now - pd.clickTimestamps.peekFirst() > 1000) {
+            pd.clickTimestamps.pollFirst();
+        }
+
+        if (pd.clickTimestamps.size() > clickMaxCps) {
+            pd.clickViolations++;
+            if (pd.clickViolations >= clickThreshold) {
+                alert(player, "Autoclicker", pd.clickViolations,
+                        pd.clickTimestamps.size() + " cps (max " + clickMaxCps + ")");
+            }
+            checkAutoban(player, pd);
+        }
+    }
+
+    private double speedMultiplier(Player player) {
+        double multiplier = 1.0;
+        if (player.isSprinting()) multiplier += 0.3;
+        PotionEffect speedEffect = player.getPotionEffect(PotionEffectType.SPEED);
+        if (speedEffect != null) {
+            multiplier += 0.2 * (speedEffect.getAmplifier() + 1);
+        }
+        return multiplier;
+    }
+
+    private boolean isNearClimbable(Player player) {
+        var type = player.getLocation().getBlock().getType();
+        String name = type.name();
+        return name.equals("LADDER") || name.equals("VINE") || name.contains("SCAFFOLDING");
+    }
+
+    private void alert(Player subject, String checkName, int violations, String detail) {
+        String message = ChatColor.RED + "[Sentinel] " + ChatColor.YELLOW + subject.getName()
+                + ChatColor.RED + " failed " + ChatColor.WHITE + checkName
+                + ChatColor.RED + " (" + violations + ") " + ChatColor.GRAY + detail;
+
+        for (Player staff : getServer().getOnlinePlayers()) {
+            if (!staff.hasPermission("sentinel.alerts")) continue;
+            PlayerData staffData = data.get(staff.getUniqueId());
+            if (staffData != null && staffData.alertsMuted) continue;
+            staff.sendMessage(message);
+        }
+        getLogger().info(ChatColor.stripColor(message));
+    }
+
+    private void checkAutoban(Player player, PlayerData pd) {
+        if (!autobanEnabled || pd.banned) return;
+
+        int total = pd.speedViolations + pd.flyViolations + pd.reachViolations + pd.clickViolations;
+        if (total < autobanTotalViolations) return;
+
+        pd.banned = true;
+
+        String broadcast = ChatColor.DARK_RED + "[Sentinel] " + ChatColor.RED + player.getName()
+                + " was automatically banned after " + total + " combined violations.";
+        for (Player staff : getServer().getOnlinePlayers()) {
+            if (staff.hasPermission("sentinel.alerts")) {
+                staff.sendMessage(broadcast);
+            }
+        }
+        getLogger().warning(ChatColor.stripColor(broadcast));
+
+        if (getServer().getPluginManager().getPlugin("LiteBans") != null) {
+            String duration = autobanDuration.equalsIgnoreCase("permanent") ? "permanent" : autobanDuration;
+            String cmd = "litebans ban " + player.getName() + " " + duration + " " + autobanReason;
+            Bukkit.dispatchCommand(Bukkit.getConsoleSender(), cmd);
+        } else {
+            player.banPlayer(autobanReason);
+            player.kickPlayer(ChatColor.RED + autobanReason);
+        }
+    }
+
+    private void decayViolations() {
+        for (PlayerData pd : data.values()) {
+            if (pd.speedViolations > 0) pd.speedViolations--;
+            if (pd.flyViolations > 0) pd.flyViolations--;
+            if (pd.reachViolations > 0) pd.reachViolations--;
+            if (pd.clickViolations > 0) pd.clickViolations--;
+        }
+    }
+
+    private static final class PlayerData {
+        long lastMoveTime = 0;
+        int airborneTicks = 0;
+        int speedViolations = 0;
+        int flyViolations = 0;
+        int reachViolations = 0;
+        int clickViolations = 0;
+        boolean alertsMuted = false;
+        boolean banned = false;
+        final Deque<Long> clickTimestamps = new ArrayDeque<>();
+    }
+}
