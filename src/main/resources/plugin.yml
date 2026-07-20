@@ -1,0 +1,23 @@
+name: Sentinel
+version: 1.0.0
+main: com.example.sentinel.SentinelPlugin
+api-version: '1.20'
+author: server-admin
+description: Lightweight custom anticheat - speed, fly, reach, and autoclicker detection.
+
+commands:
+  sentinel:
+    description: Sentinel anticheat admin command.
+    usage: "/sentinel reload | /sentinel toggle"
+    permission: sentinel.admin
+
+permissions:
+  sentinel.admin:
+    description: Allows managing Sentinel (reload, toggle alerts).
+    default: op
+  sentinel.alerts:
+    description: Receive Sentinel violation alerts in chat.
+    default: op
+  sentinel.bypass:
+    description: Exempt a player from all Sentinel checks.
+    default: false
