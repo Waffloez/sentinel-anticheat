@@ -103,7 +103,7 @@ public final class SentinelPlugin extends JavaPlugin implements Listener {
         decaySeconds = cfg.getLong("violation-decay-seconds", 60);
     }
 
-    private boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+    public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         if (args.length == 1 && args[0].equalsIgnoreCase("reload")) {
             if (!sender.hasPermission("sentinel.admin")) {
                 sender.sendMessage(ChatColor.RED + "You don't have permission to do that.");
