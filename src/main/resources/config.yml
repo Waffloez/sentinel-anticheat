@@ -1,0 +1,39 @@
+# Sentinel - basic anticheat configuration
+#
+# Every check builds a "violation count" per player. That count slowly
+# decays over time (violation-decay-seconds), so one lag spike won't
+# get someone flagged - only sustained, repeated suspicious behavior
+# crosses the alert threshold.
+
+violation-decay-seconds: 60
+
+checks:
+  speed:
+    enabled: true
+    # Max blocks per second before a violation is added.
+    # 8.5 is generous - normal sprint-jump is ~7.5, this leaves buffer
+    # for lag and minor potion effects.
+    max-blocks-per-second: 8.5
+    violations-before-alert: 3
+
+  fly:
+    enabled: true
+    # How many ticks a player can be airborne (not on ground, not
+    # gliding/swimming/climbing/levitating) before a violation is added.
+    # 40 ticks = 2 seconds.
+    max-airborne-ticks: 40
+    violations-before-alert: 3
+
+  reach:
+    enabled: true
+    # Max distance (blocks) between attacker and target on hit.
+    # Vanilla survival reach is ~3.0, this adds buffer for lag.
+    max-distance: 4.0
+    violations-before-alert: 2
+
+  autoclicker:
+    enabled: true
+    # Max sustained clicks per second before a violation is added.
+    # Human clicking rarely sustains above ~14-16 CPS for long.
+    max-clicks-per-second: 18
+    violations-before-alert: 3
