@@ -66,13 +66,15 @@ public final class SentinelPlugin extends JavaPlugin implements Listener {
 
     private boolean autobanEnabled;
     private int autobanTotalViolations;
-    private String autobanDuration;
-    private String autobanReason;
+    private String autobanOffendReason;
 
     private static final String SUS_MENU_TITLE = ChatColor.DARK_RED + "Sentinel - Suspicious Players";
     private static final String[] FILTERS = {"ALL", "NORMAL", "NETHER", "THE_END"};
+    private static final String[] FILTER_NAMES = {"All Dimensions", "Overworld", "Nether", "The End"};
+    private static final int PAGE_SIZE = 45;
 
     private final Map<UUID, Map<Integer, UUID>> susMenuSlots = new HashMap<>();
+    private final Map<UUID, SusViewState> susViewStates = new HashMap<>();
     private final Map<UUID, Location> spectatorReturnLocation = new HashMap<>();
     private final Map<UUID, GameMode> spectatorReturnGameMode = new HashMap<>();
 
@@ -141,8 +143,7 @@ public final class SentinelPlugin extends JavaPlugin implements Listener {
 
         autobanEnabled = cfg.getBoolean("autoban.enabled", true);
         autobanTotalViolations = cfg.getInt("autoban.total-violations", 15);
-        autobanDuration = cfg.getString("autoban.duration", "permanent");
-        autobanReason = cfg.getString("autoban.reason", "Automatically banned by Sentinel for repeated cheat detections");
+        autobanOffendReason = cfg.getString("autoban.offend-reason", "cheats");
     }
 
     private boolean onSentinelCommand(CommandSender sender, Command command, String label, String[] args) {
@@ -186,11 +187,11 @@ public final class SentinelPlugin extends JavaPlugin implements Listener {
             return true;
         }
 
-        openSusMenu(viewer, "ALL");
+        openSusMenu(viewer, 0, 0);
         return true;
     }
 
-    private void openSusMenu(Player viewer, String filter) {
+    private void openSusMenu(Player viewer, int filterIndex, int page) {
         List<Map.Entry<UUID, PlayerData>> flagged = new ArrayList<>();
         for (Map.Entry<UUID, PlayerData> entry : data.entrySet()) {
             PlayerData pd = entry.getValue();
@@ -200,6 +201,7 @@ public final class SentinelPlugin extends JavaPlugin implements Listener {
             Player target = Bukkit.getPlayer(entry.getKey());
             if (target == null || !target.isOnline()) continue;
 
+            String filter = FILTERS[filterIndex];
             if (!filter.equals("ALL") && !target.getWorld().getEnvironment().name().equals(filter)) continue;
 
             flagged.add(entry);
@@ -211,18 +213,18 @@ public final class SentinelPlugin extends JavaPlugin implements Listener {
             return Integer.compare(totalB, totalA);
         });
 
-        int rows = Math.min(6, 2 + (flagged.size() / 9) + 1);
-        Inventory inv = Bukkit.createInventory(null, rows * 9, SUS_MENU_TITLE);
+        int totalPages = Math.max(1, (int) Math.ceil(flagged.size() / (double) PAGE_SIZE));
+        if (page < 0) page = 0;
+        if (page >= totalPages) page = totalPages - 1;
 
-        inv.setItem(0, filterItem(Material.NAME_TAG, "All Dimensions", "ALL", filter));
-        inv.setItem(1, filterItem(Material.GRASS_BLOCK, "Overworld", "NORMAL", filter));
-        inv.setItem(2, filterItem(Material.NETHERRACK, "Nether", "NETHER", filter));
-        inv.setItem(3, filterItem(Material.END_STONE, "The End", "THE_END", filter));
+        Inventory inv = Bukkit.createInventory(null, 54, SUS_MENU_TITLE);
 
+        int start = page * PAGE_SIZE;
+        int end = Math.min(start + PAGE_SIZE, flagged.size());
         Map<Integer, UUID> slotMap = new HashMap<>();
-        int slot = 9;
-        for (Map.Entry<UUID, PlayerData> entry : flagged) {
-            if (slot >= rows * 9) break;
+
+        for (int i = start; i < end; i++) {
+            Map.Entry<UUID, PlayerData> entry = flagged.get(i);
             Player target = Bukkit.getPlayer(entry.getKey());
             if (target == null) continue;
             PlayerData pd = entry.getValue();
@@ -243,20 +245,46 @@ public final class SentinelPlugin extends JavaPlugin implements Listener {
             meta.setLore(lore);
 
             head.setItemMeta(meta);
+
+            int slot = i - start;
             inv.setItem(slot, head);
-            slotMap.put(slot, target.getUniqueId());
-            slot++;
+            slotMap.put(slot, entry.getKey());
         }
 
+        ItemStack filler = new ItemStack(Material.GRAY_STAINED_GLASS_PANE);
+        ItemMeta fillerMeta = filler.getItemMeta();
+        fillerMeta.setDisplayName(" ");
+        filler.setItemMeta(fillerMeta);
+        for (int s = 45; s <= 53; s++) {
+            inv.setItem(s, filler);
+        }
+
+        if (page > 0) {
+            inv.setItem(45, navItem(Material.ARROW, ChatColor.YELLOW + "Previous Page"));
+        }
+        if (page < totalPages - 1) {
+            inv.setItem(53, navItem(Material.ARROW, ChatColor.YELLOW + "Next Page"));
+        }
+
+        ItemStack compass = new ItemStack(Material.COMPASS);
+        ItemMeta compassMeta = compass.getItemMeta();
+        compassMeta.setDisplayName(ChatColor.AQUA + "" + ChatColor.BOLD + "Dimension: " + ChatColor.WHITE + FILTER_NAMES[filterIndex]);
+        List<String> compassLore = new ArrayList<>();
+        compassLore.add(ChatColor.GRAY + "Click to switch dimension");
+        compassLore.add(ChatColor.GRAY + "Page " + (page + 1) + "/" + totalPages);
+        compassMeta.setLore(compassLore);
+        compass.setItemMeta(compassMeta);
+        inv.setItem(49, compass);
+
         susMenuSlots.put(viewer.getUniqueId(), slotMap);
+        susViewStates.put(viewer.getUniqueId(), new SusViewState(filterIndex, page));
         viewer.openInventory(inv);
     }
 
-    private ItemStack filterItem(Material mat, String name, String filterValue, String currentFilter) {
+    private ItemStack navItem(Material mat, String name) {
         ItemStack item = new ItemStack(mat);
         ItemMeta meta = item.getItemMeta();
-        boolean selected = filterValue.equals(currentFilter);
-        meta.setDisplayName((selected ? ChatColor.GREEN + "" + ChatColor.BOLD : ChatColor.GRAY.toString()) + name + (selected ? " (selected)" : ""));
+        meta.setDisplayName(name);
         item.setItemMeta(meta);
         return item;
     }
@@ -278,9 +306,26 @@ public final class SentinelPlugin extends JavaPlugin implements Listener {
         int slot = event.getRawSlot();
         if (slot < 0 || slot >= event.getInventory().getSize()) return;
 
-        if (slot >= 0 && slot <= 3) {
-            String filter = FILTERS[slot];
-            openSusMenu(viewer, filter);
+        SusViewState state = susViewStates.get(viewer.getUniqueId());
+        if (state == null) return;
+
+        if (slot == 49) {
+            int nextFilter = (state.filterIndex + 1) % FILTERS.length;
+            openSusMenu(viewer, nextFilter, 0);
+            return;
+        }
+
+        if (slot == 45) {
+            openSusMenu(viewer, state.filterIndex, state.page - 1);
+            return;
+        }
+
+        if (slot == 53) {
+            openSusMenu(viewer, state.filterIndex, state.page + 1);
+            return;
+        }
+
+        if (slot >= 45) {
             return;
         }
 
@@ -308,6 +353,7 @@ public final class SentinelPlugin extends JavaPlugin implements Listener {
     public void onInventoryClose(InventoryCloseEvent event) {
         if (event.getView().getTitle().equals(SUS_MENU_TITLE)) {
             susMenuSlots.remove(event.getPlayer().getUniqueId());
+            susViewStates.remove(event.getPlayer().getUniqueId());
         }
     }
 
@@ -494,14 +540,22 @@ public final class SentinelPlugin extends JavaPlugin implements Listener {
         }
         getLogger().warning(ChatColor.stripColor(broadcast));
 
-        if (getServer().getPluginManager().getPlugin("LiteBans") != null) {
-            String duration = autobanDuration.equalsIgnoreCase("permanent") ? "permanent" : autobanDuration;
-            String cmd = "litebans ban " + player.getName() + " " + duration + " " + autobanReason;
-            Bukkit.dispatchCommand(Bukkit.getConsoleSender(), cmd);
-        } else {
-            player.banPlayer(autobanReason);
-            player.kickPlayer(ChatColor.RED + autobanReason);
+        // Primary: run the already-working /offend command with the
+        // configured reason key, so this shows up in your normal ban
+        // records exactly like a staff-issued offense.
+        boolean offendRan = false;
+        if (getServer().getPluginManager().getPlugin("Offend") != null) {
+            String cmd = "offend " + player.getName() + " " + autobanOffendReason;
+            offendRan = Bukkit.dispatchCommand(Bukkit.getConsoleSender(), cmd);
         }
+
+        // Safety net: if Offend isn't installed, or its command didn't run
+        // for any reason, fall back to Minecraft's own guaranteed ban list
+        // so the player is removed either way.
+        if (!offendRan) {
+            player.banPlayer("Automatically banned by Sentinel for repeated cheat detections");
+        }
+        player.kickPlayer(ChatColor.RED + "You have been banned for cheating.");
     }
 
     private void decayViolations() {
@@ -523,5 +577,15 @@ public final class SentinelPlugin extends JavaPlugin implements Listener {
         boolean alertsMuted = false;
         boolean banned = false;
         final Deque<Long> clickTimestamps = new ArrayDeque<>();
+    }
+
+    private static final class SusViewState {
+        final int filterIndex;
+        final int page;
+
+        SusViewState(int filterIndex, int page) {
+            this.filterIndex = filterIndex;
+            this.page = page;
+        }
     }
 }
