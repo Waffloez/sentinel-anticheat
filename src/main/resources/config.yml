@@ -1,17 +1,3 @@
-# Sentinel - basic anticheat configuration
-#
-# Each check has two thresholds:
-#   violations-before-alert -> staff get notified in chat
-#   block-violations        -> Sentinel actively interferes (rubber-band,
-#                               cancel hit, etc). Kept higher than the
-#                               alert threshold so it only blocks once
-#                               it's confident, not on a single lag spike.
-#
-# On top of that, autoban below watches the COMBINED total violations
-# across every check, and bans once that total gets high enough -
-# kept much higher than any single check's block threshold, so it only
-# fires on sustained, repeated cheating across the board.
-
 violation-decay-seconds: 60
 
 checks:
@@ -40,14 +26,30 @@ checks:
     enabled: true
     max-clicks-per-second: 18
     violations-before-alert: 3
-    # Blocking clicks isn't safe to automate - it would also interrupt
-    # legitimate fast clickers. This check stays alert-only; review
-    # flagged players yourself via /sus. It still counts toward autoban.
+
+  killaura:
+    enabled: true
+    # If the angle between where the player is looking and where the
+    # target actually is exceeds this, they're hitting something they
+    # aren't looking at.
+    max-aim-angle-degrees: 30
+    # If a player lands hits on 2+ DIFFERENT entities within this many
+    # milliseconds, that's beyond normal human reaction/aim switching.
+    multi-hit-window-ms: 150
+    violations-before-alert: 3
+
+  macros:
+    enabled: true
+    # A macro's clicks are suspiciously perfectly-timed. This is the
+    # max allowed timing consistency (standard deviation, in ms)
+    # across recent clicks - lower stddev = more robotic.
+    max-timing-consistency-ms: 8
+    # Minimum click samples needed before judging consistency (avoids
+    # false positives from too few data points).
+    min-samples: 8
+    violations-before-alert: 3
 
 autoban:
   enabled: true
-  # Combined violation count across ALL checks before a ban fires.
   total-violations: 15
-  # The reason key from your Offend plugin's config.yml to use
-  # (e.g. "cheats", "esp", "macros" - see plugins/Offend/config.yml).
   offend-reason: "cheats"
